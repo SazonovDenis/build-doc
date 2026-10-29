@@ -1,0 +1,21 @@
+.idea/
+
+# Ignore other common files and directories
+*.log
+*.class
+*.war
+*.iml
+*.ipr
+*.iws
+out/
+tmp/
+logs/
+notuse/
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
+
+# ---
+*.class
+?

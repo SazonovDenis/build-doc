@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+"""
+build-doc - HTML-документация проекта (сайт) из каталога doc (--doc; проект - текущий каталог или --root):
+
+    *.md          страницы (pandoc, шаблон template.html, фильтр filter.lua); readme.md - index.html;
+    navigate.md   верхняя панель навигации всех страниц: строка - ссылка [текст](адрес) на страницу X.md или
+                  любой адрес как есть, --- - разделитель;
+    dict/*.tsv    справочники - одна страница dict.html, раздел на файл;
+    --db КАТАЛОГ  описание БД для gen-html утилиты doc-db (каталог - в DOC_DB) - db.html.
+
+Ссылки X.md и dict/X.tsv переписываются на страницы сайта, ссылки на каталоги dict и --db - на dict.html и db.html.
+С --func-page коды функций (Ф-ПЛТ-01) становятся ссылками на определения на этой странице.
+После сборки проверяются ссылки на .md: битые - в stderr, код выхода 1.
+"""
+import argparse
+import csv
+import html
+import os
+import re
+import shutil
+import subprocess
+import sys
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import unquote
+
+SCRIPT_DIR = Path(__file__).parent.resolve()
+TEMPLATE = SCRIPT_DIR / "template.html"
+FILTER = SCRIPT_DIR / "filter.lua"
+DB_TEMPLATE = SCRIPT_DIR / "db.html.j2"
+# утилита doc-db: каталог в DOC_DB, по умолчанию рядом с build-doc
+DB_HTML = Path(os.environ.get("DOC_DB", SCRIPT_DIR.parent / "doc-db")) / "gen-html"
+
+NAV_NAME = "navigate"
+# страницы не из *.md: справочники и БД
+DICT_PAGE = "dict"
+DB_PAGE = "db"
+
+ROOT = DOC_DIR = SITE_DIR = None
+
+
+def html_name(name):
+    return "index.html" if name == "readme" else name + ".html"
+
+
+def nav_href(target):
+    """Адрес пункта меню: страница X.md - X.html, остальное - как есть"""
+    m = re.match(r"^([^/:#]+)\.md(#.*)?$", target)
+    return html_name(m.group(1)) + (m.group(2) or "") if m else target
+
+
+def load_nav():
+    """navigate.md: группы ссылок [(текст, адрес на сайте)], между группами - разделитель. Нет файла - нет панели"""
+    nav_file = DOC_DIR / f"{NAV_NAME}.md"
+    if not nav_file.exists():
+        return []
+    groups = [[]]
+    for n, line in enumerate(nav_file.read_text(encoding="utf-8").splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        if line == "---":
+            groups.append([])
+            continue
+        m = re.fullmatch(r"\[([^\]]+)\]\(([^)\s]+)\)", line)
+        if not m:
+            sys.exit(f"{nav_file}:{n}: ожидается ссылка [текст](адрес) или ---: {line}")
+        groups[-1].append((m.group(1), nav_href(m.group(2))))
+    return [g for g in groups if g]
+
+
+def nav_html(current, nav):
+    out = []
+    for g in nav:
+        items = []
+        for label, href in g:
+            cls = ' class="current"' if href == html_name(current) else ""
+            items.append(f'<a href="{html.escape(href)}"{cls}>{html.escape(label)}</a>')
+        out.append("\n".join(items))
+    return '\n<span class="sep"></span>\n'.join(out)
+
+
+def page_title(text, default):
+    m = re.search(r"^#+\s+(.+)$", text, re.M)
+    return m.group(1).strip() if m else default
+
+
+def pandoc(name, text, title, nav, filter_env):
+    env = dict(os.environ, DOC_PAGE=name, **filter_env)
+    cmd = [
+        "pandoc", "-f", "markdown+gfm_auto_identifiers", "-t", "html5", "-s",
+        "--template", str(TEMPLATE), "--lua-filter", str(FILTER),
+        "--toc", "--toc-depth=3",
+        "-M", f"pagetitle={title}", "-V", f"nav={nav_html(name, nav)}",
+        "-o", str(SITE_DIR / html_name(name)),
+    ]
+    subprocess.run(cmd, input=text, text=True, env=env, check=True)
+
+
+def dict_markdown(dict_dir):
+    """Страница справочников: раздел на tsv-файл, таблица и список страниц, которые на него ссылаются"""
+    used = {}
+    for md in sorted(DOC_DIR.glob("*.md")):
+        for stem in re.findall(r"\]\(dict/([^)/]+)\.tsv\)", md.read_text(encoding="utf-8")):
+            used.setdefault(stem, []).append(md.stem)
+
+    parts = ["# Состав значений для справочников", "", "Списки значений из `dict/*.tsv`.", ""]
+    for tsv in sorted(dict_dir.glob("*.tsv")):
+        with tsv.open(encoding="utf-8", newline="") as f:
+            rows = list(csv.reader(f, delimiter="\t"))
+        parts += [f"## {tsv.stem} {{#dict-{tsv.stem}}}", ""]
+        refs = sorted(set(used.get(tsv.stem, [])))
+        if refs:
+            links = ", ".join(f"[{r}]({r}.md)" for r in refs)
+            parts += [f"[Где используется: {links}]{{.dict-used}}", ""]
+        if not rows:
+            parts += ["(пусто)", ""]
+            continue
+        head, body = rows[0], rows[1:]
+        t = ["<table>", "<tr>" + "".join(f"<th>{html.escape(c)}</th>" for c in head) + "</tr>"]
+        for r in body:
+            t.append("<tr>" + "".join(f"<td>{html.escape(c)}</td>" for c in r) + "</tr>")
+        t.append("</table>")
+        parts += ["```{=html}", *t, "```", ""]
+    return "\n".join(parts)
+
+
+class IdCollector(HTMLParser):
+    """Якоря страницы: id и <a name>"""
+    def __init__(self):
+        super().__init__()
+        self.ids = set()
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if a.get("id"):
+            self.ids.add(a["id"])
+        if tag == "a" and a.get("name"):
+            self.ids.add(a["name"])
+
+
+def check_links():
+    """Битые ссылки на .md в *.md: [..](X.md), [..](X.md#якорь), [..](#якорь) - нет файла или якоря на странице сайта"""
+    ids = {}
+
+    def page_ids(stem):
+        if stem not in ids:
+            p = IdCollector()
+            p.feed((SITE_DIR / html_name(stem)).read_text(encoding="utf-8"))
+            ids[stem] = p.ids
+        return ids[stem]
+
+    errors = []
+    for md in sorted(DOC_DIR.glob("*.md")):
+        text = md.read_text(encoding="utf-8")
+        for target in re.findall(r"\]\(([^)\s]*)\)", text):
+            m = re.match(r"^(?:([^/:#]+)\.md)?(?:#(.+))?$", target)
+            if not m or not (m.group(1) or m.group(2)):
+                continue
+            stem, anchor = m.group(1) or md.stem, m.group(2)
+            if stem == NAV_NAME:  # у navigate.md нет своей страницы
+                continue
+            if not (DOC_DIR / f"{stem}.md").exists():
+                errors.append(f"{md.name}: нет файла {target}")
+            elif anchor and unquote(anchor) not in page_ids(stem):
+                errors.append(f"{md.name}: нет якоря {target}")
+    return errors
+
+
+def main():
+    ap = argparse.ArgumentParser(description="HTML-документация проекта из doc/*.md, doc/dict/*.tsv и описания БД")
+    ap.add_argument("--root", type=Path, default=Path.cwd(), help="корень проекта (по умолчанию - текущий каталог)")
+    ap.add_argument("--doc", type=Path, default=Path("doc"), help="каталог документации от корня (по умолчанию doc)")
+    ap.add_argument("-o", "--output", type=Path, default=Path("_site"), help="каталог сайта от корня (по умолчанию _site)")
+    ap.add_argument("--db", type=Path, help="каталог описания БД для gen-html от корня; не задан - без db.html")
+    ap.add_argument("--func-page", metavar="PAGE", help="страница с определениями функций (без .md): коды функций - ссылки на неё")
+    args = ap.parse_args()
+
+    global ROOT, DOC_DIR, SITE_DIR
+    ROOT = args.root.resolve()
+    DOC_DIR = ROOT / args.doc
+    SITE_DIR = ROOT / args.output
+    db_dir = ROOT / args.db if args.db else None
+    dict_dir = DOC_DIR / "dict"
+
+    if SITE_DIR.exists():
+        shutil.rmtree(SITE_DIR)
+    SITE_DIR.mkdir(parents=True)
+
+    filter_env = {"DOC_FUNC_PAGE": args.func_page or ""}
+    if db_dir:
+        filter_env["DOC_DB_LINK"] = os.path.relpath(db_dir, DOC_DIR)
+
+    nav = load_nav()
+    pages = [md.stem for md in sorted(DOC_DIR.glob("*.md")) if md.stem != NAV_NAME]
+    for name in pages:
+        text = (DOC_DIR / f"{name}.md").read_text(encoding="utf-8")
+        pandoc(name, text, page_title(text, name), nav, filter_env)
+    count = len(pages)
+
+    if dict_dir.is_dir():
+        text = dict_markdown(dict_dir)
+        pandoc(DICT_PAGE, text, page_title(text, DICT_PAGE), nav, filter_env)
+        count += 1
+
+    if db_dir:
+        db = subprocess.run([sys.executable, str(DB_HTML), "--root", str(ROOT), "--doc", str(db_dir), "-ru",
+                             "-t", str(DB_TEMPLATE), "-o", str(SITE_DIR / html_name(DB_PAGE)),
+                             "-D", f"nav={nav_html(DB_PAGE, nav)}"])
+        if db.returncode:
+            sys.exit(f"gen-html: ошибка, код {db.returncode}")
+        count += 1
+
+    errors = check_links()
+    for e in errors:
+        print(f"BROKEN {e}", file=sys.stderr)
+    print(f"{SITE_DIR}: {count} страниц, битых ссылок: {len(errors)}")
+    sys.exit(1 if errors else 0)
+
+
+if __name__ == "__main__":
+    main()

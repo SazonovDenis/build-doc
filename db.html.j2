@@ -1,0 +1,46 @@
+{# Версия db.html для сайта: общая навигация, содержание - боковым меню. Таблицы и диаграммы - из template.html.j2, подписи - t (gen-html -ru) #}
+{% extends "template.html.j2" %}
+
+{% block style %}
+<style>
+body { padding: 0; }
+{% include "layout-css.html" %}
+nav.toc .toc-count { color: #888; font-weight: normal; }
+</style>
+{% endblock %}
+
+{% block page %}
+<nav class="pages">{{ nav }}</nav>
+<div class="layout">
+<nav class="toc">
+<ul>
+  <li><a href="#_top">{{ doc.title | default(t.default_title) }}</a>
+    <ul>
+    {% if diagrams_doc %}
+      <li><a href="#_diagrams">{{ t.diagrams }}</a>
+        <ul>
+        {% for gname, ginfo in diagrams_doc.items() %}
+          <li><a href="#diag_{{ gname }}">{{ ginfo.title | default(gname) }}</a></li>
+        {% endfor %}
+        </ul>
+      </li>
+    {% endif %}
+      <li><a href="#_tables">{{ t.tables }} <span class="toc-count">({{ sorted_tables | length }})</span></a>
+        <ul>
+        {% for tname in sorted_tables %}
+          {% set tdoc = tables_doc.get(tname, {}) or {} %}
+          <li><a href="#tbl_{{ tname }}"{% if tdoc.title %} title="{{ tdoc.title }}"{% endif %}>{{ tname }}</a></li>
+        {% endfor %}
+        </ul>
+      </li>
+    </ul>
+  </li>
+</ul>
+</nav>
+<main>
+<h1><a id="_top"></a>{{ doc.title | default(t.default_title) }}</h1>
+{% if doc.subtitle %}<div class="subtitle">{{ doc.subtitle }}</div>{% endif %}
+{{ self.content() }}
+</main>
+</div>
+{% endblock %}

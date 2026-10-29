@@ -1,0 +1,29 @@
+/* Разметка страницы сайта - общая для template.html (pandoc) и db.html.j2 (db-html) */
+html { scroll-padding-top: 48px; }
+
+/* Навигация по документам */
+nav.pages { position: sticky; top: 0; z-index: 1; background: #e8f0fb; border-bottom: 1px solid #c5d5ee; padding: 8px 32px; }
+nav.pages a { color: #1a5fa0; margin-right: 18px; white-space: nowrap; line-height: 1.8; text-decoration: none; }
+nav.pages a:hover { text-decoration: underline; }
+nav.pages a.current { font-weight: bold; }
+nav.pages .sep { display: inline-block; height: 1.1em; margin-right: 18px; vertical-align: middle; border-left: 1px solid #9fb6d8; }
+
+.layout { display: flex; gap: 32px; padding: 0 32px; }
+
+/* Оглавление страницы */
+nav.toc { flex: 0 0 280px; position: sticky; top: 44px; align-self: flex-start; max-height: calc(100vh - 44px);
+          overflow-y: auto; padding: 20px 0; font-size: 13px; line-height: 1.4; }
+nav.toc ul { list-style: none; margin: 0; padding: 0; }
+nav.toc ul ul { padding-left: 14px; }
+nav.toc li { margin: 0; padding: 2px 0; }
+nav.toc a { color: #1a5fa0; text-decoration: none; }
+nav.toc a:hover { text-decoration: underline; }
+nav.toc > ul > li > a { font-weight: bold; }
+
+main { flex: 1 1 auto; min-width: 0; max-width: 72rem; padding: 20px 0 48px; }
+
+@media (max-width: 900px) {
+  .layout { display: block; padding: 0 16px; }
+  nav.toc { position: static; max-height: none; border-bottom: 1px solid #ddd; }
+  nav.pages { padding: 8px 16px; }
+}

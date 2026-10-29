@@ -1,0 +1,40 @@
+#!/bin/sh
+set -e
+
+# publish-doc - выкладывает собранный сайт на сервер: rsync с --delete, на сервере остаётся ровно содержимое сайта.
+#
+#   publish-doc -i КЛЮЧ [-s САЙТ] ХОСТ:КАТАЛОГ
+#
+# КЛЮЧ - ssh-ключ, САЙТ - каталог сайта (по умолчанию _site), ХОСТ:КАТАЛОГ - куда, например
+# ec2-user@example.com:/var/www/html/proj/. На сервере нужен sudo без пароля.
+
+SITE=_site
+while getopts "i:s:" opt; do
+    case $opt in
+        i) KEY="$OPTARG" ;;
+        s) SITE="$OPTARG" ;;
+        *) exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+if [ -z "$KEY" ] || [ $# -ne 1 ]; then
+    echo "usage: publish-doc -i KEY [-s SITE] HOST:DIR" >&2
+    exit 2
+fi
+HOST="${1%%:*}"
+DEST="${1#*:}"
+
+if [ ! -f "$SITE/index.html" ]; then
+    echo "Нет $SITE/index.html - сначала build-doc" >&2
+    exit 1
+fi
+
+SSH="ssh -i $KEY -o BatchMode=yes"
+
+$SSH "$HOST" "sudo mkdir -p $DEST"
+rsync -rlptvz --delete --chmod=D755,F644 --rsync-path="sudo rsync" -e "$SSH" "$SITE/" "$HOST:$DEST"
+$SSH "$HOST" "sudo chown -R root:root $DEST"
+
+echo
+echo "Опубликовано: $HOST:$DEST"
